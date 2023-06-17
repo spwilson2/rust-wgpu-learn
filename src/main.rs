@@ -2,8 +2,11 @@ fn main() {
     pollster::block_on(run());
 }
 
-use std::iter;
-use wgpu::util::DeviceExt;
+use std::{iter, mem::size_of};
+use wgpu::{
+    util::DeviceExt, BindGroupDescriptor, BindGroupLayout, BindGroupLayoutDescriptor,
+    BufferBindingType, Limits, ShaderStages,
+};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -40,28 +43,35 @@ impl Vertex {
 
 const VERTICES: &[Vertex] = &[
     Vertex {
-        position: [-0.0868241, 0.49240386, 0.0],
-        color: [0.5, 0.0, 0.5],
+        position: [-0.5, 0.5, 0.0],
+        color: [0.0, 0.0, 1.0],
     }, // A
     Vertex {
-        position: [-0.49513406, 0.06958647, 0.0],
-        color: [0.5, 0.0, 0.5],
+        position: [0.5, -0.5, 0.0],
+        color: [0.0, 1.0, 0.0],
     }, // B
     Vertex {
-        position: [-0.21918549, -0.44939706, 0.0],
-        color: [0.5, 0.0, 0.5],
+        position: [0.5, 0.5, 0.0],
+        color: [1.0, 0.0, 0.0],
     }, // C
     Vertex {
-        position: [0.35966998, -0.3473291, 0.0],
-        color: [0.5, 0.0, 0.5],
+        position: [-0.5, -0.5, 0.0],
+        color: [0.0, 0.0, 0.0],
     }, // D
-    Vertex {
-        position: [0.44147372, 0.2347359, 0.0],
-        color: [0.5, 0.0, 0.5],
-    }, // E
+       //Vertex {
+       //    position: [0.44147372, 0.2347359, 0.0],
+       //    color: [0.5, 0.0, 0.5],
+       //}, // E
 ];
 
-const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4, /* padding */ 0];
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct UniformExample {
+    utime: f32,
+}
+//const UNIFORM: &[UniformExample] = &[UniformExample { utime: 0.0 }];
+
+const INDICES: &[u16] = &[0, 3, 1, 0, 1, 2]; //, 2, 3, 4, /* padding */ 0];
 
 struct State {
     surface: wgpu::Surface,
@@ -70,9 +80,11 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
-    // NEW!
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    timestamp: std::time::Instant,
     num_indices: u32,
     window: Window,
 }
@@ -95,6 +107,10 @@ impl State {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     //features: wgpu::Features::POLYGON_MODE_LINE,
+                    limits: Limits {
+                        //max_bind_groups: 1,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 /*trace_path=*/ None,
@@ -124,11 +140,26 @@ impl State {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
+        let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Example bind group"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                // The binding index as used in the @binding attribute in the shader
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(size_of::<UniformExample>() as _),
+                },
+                //count: std::num::NonZeroU32::new(1),
+                count: None,
+            }],
+        });
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&bind_layout],
                 push_constant_ranges: &[],
             });
 
@@ -187,6 +218,24 @@ impl State {
             usage: wgpu::BufferUsages::INDEX,
         });
         let num_indices = INDICES.len() as u32;
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Uniform buffer"),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            size: std::mem::size_of::<UniformExample>() as u64,
+            mapped_at_creation: false,
+        });
+        let uniform_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &bind_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(size_of::<UniformExample>() as _),
+                }),
+            }],
+        });
 
         Self {
             surface,
@@ -197,8 +246,11 @@ impl State {
             render_pipeline,
             vertex_buffer,
             index_buffer,
+            uniform_buffer,
+            uniform_bind_group,
             num_indices,
             window,
+            timestamp: std::time::Instant::now(),
         }
     }
 
@@ -256,9 +308,18 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            //render_pass.draw(0..VERTICES.len() as u32, 0..1);
         }
 
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            /*offset=*/ 0,
+            bytemuck::bytes_of(&UniformExample {
+                utime: self.timestamp.elapsed().as_secs_f32(),
+            }),
+        );
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
 
