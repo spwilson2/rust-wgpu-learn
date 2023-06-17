@@ -2,7 +2,7 @@ fn main() {
     pollster::block_on(run());
 }
 
-use std::{iter, mem::size_of};
+use std::{default, iter, mem::size_of};
 use wgpu::{
     util::DeviceExt, BindGroupDescriptor, BindGroupLayout, BindGroupLayoutDescriptor,
     BufferBindingType, Limits, ShaderStages,
@@ -64,10 +64,12 @@ const VERTICES: &[Vertex] = &[
        //}, // E
 ];
 
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct UniformExample {
-    utime: f32,
+    color: [f32; 4],
+    time: f32,
+    _pad: [f32; 3],
 }
 //const UNIFORM: &[UniformExample] = &[UniformExample { utime: 0.0 }];
 
@@ -145,7 +147,7 @@ impl State {
             entries: &[wgpu::BindGroupLayoutEntry {
                 // The binding index as used in the @binding attribute in the shader
                 binding: 0,
-                visibility: ShaderStages::VERTEX,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -317,7 +319,9 @@ impl State {
             &self.uniform_buffer,
             /*offset=*/ 0,
             bytemuck::bytes_of(&UniformExample {
-                utime: self.timestamp.elapsed().as_secs_f32(),
+                color: [0.5, 1.0, 0.4, 1.0],
+                time: self.timestamp.elapsed().as_secs_f32(),
+                ..Default::default()
             }),
         );
         self.queue.submit(iter::once(encoder.finish()));
