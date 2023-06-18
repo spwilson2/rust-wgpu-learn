@@ -16,8 +16,17 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    var offset = 0.3 * vec3f(cos(uExampleUniform.time), sin(uExampleUniform.time), 0.0);
-    out.position = vec4f(in.position + offset, 1.0);
+    let ratio = 0.5;
+    let angle = uExampleUniform.time; // you can multiply it go rotate faster
+    let alpha = cos(angle);
+    let beta = sin(angle);
+    var position = vec3<f32>(
+        in.position.x,
+        alpha * in.position.y + beta * in.position.z,
+        alpha * in.position.z - beta * in.position.y,
+    );
+    //out.position = vec4<f32>(position.x, position.y * ratio, position.z, 1.0);
+    out.position = vec4<f32>(position.x, position.y * ratio, position.z * 0.5 + 0.5, 1.0);
     out.color = in.color;
     return out;
 }

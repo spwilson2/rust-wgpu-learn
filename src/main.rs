@@ -5,7 +5,8 @@ fn main() {
 use std::{default, iter, mem::size_of};
 use wgpu::{
     util::DeviceExt, BindGroupDescriptor, BindGroupLayout, BindGroupLayoutDescriptor,
-    BufferBindingType, Limits, ShaderStages,
+    BufferBindingType, Limits, RenderPassDepthStencilAttachment, ShaderStages, TextureUsages,
+    TextureViewDescriptor,
 };
 use winit::{
     event::*,
@@ -43,25 +44,25 @@ impl Vertex {
 
 const VERTICES: &[Vertex] = &[
     Vertex {
-        position: [-0.5, 0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
-    }, // A
+        position: [-0.5, -0.5, -0.3],
+        color: [1.0, 1.0, 1.0],
+    },
     Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
-    }, // B
+        position: [0.5, -0.5, -0.3],
+        color: [1.0, 1.0, 1.0],
+    },
     Vertex {
-        position: [0.5, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
-    }, // C
+        position: [0.5, 0.5, -0.3],
+        color: [1.0, 1.0, 1.0],
+    },
     Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 0.0],
-    }, // D
-       //Vertex {
-       //    position: [0.44147372, 0.2347359, 0.0],
-       //    color: [0.5, 0.0, 0.5],
-       //}, // E
+        position: [-0.5, 0.5, -0.3],
+        color: [1.0, 1.0, 1.0],
+    },
+    Vertex {
+        position: [0.0, 0.0, 0.5],
+        color: [0.5, 0.5, 0.5],
+    },
 ];
 
 #[repr(C, align(16))]
@@ -72,8 +73,18 @@ struct UniformExample {
     _pad: [f32; 3],
 }
 //const UNIFORM: &[UniformExample] = &[UniformExample { utime: 0.0 }];
-
-const INDICES: &[u16] = &[0, 3, 1, 0, 1, 2]; //, 2, 3, 4, /* padding */ 0];
+#[rustfmt::skip]
+const INDICES: &[u16] = &[
+    // Base
+    0, 1, 2,
+    0, 1, 2,
+    // Sides
+    0, 2, 3,
+    0, 1, 4,
+    1, 2, 4,
+    2, 3, 4,
+    3, 0, 4,
+    ]; //, 2, 3, 4, /* padding */ 0];
 
 struct State {
     surface: wgpu::Surface,
@@ -86,6 +97,9 @@ struct State {
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    depth_texture: Option<wgpu::Texture>,
+    depth_texture_view: Option<wgpu::TextureView>,
+    texture_depth_format: wgpu::TextureFormat,
     timestamp: std::time::Instant,
     num_indices: u32,
     window: Window,
@@ -108,7 +122,7 @@ impl State {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    //features: wgpu::Features::POLYGON_MODE_LINE,
+                    features: wgpu::Features::POLYGON_MODE_LINE,
                     limits: Limits {
                         //max_bind_groups: 1,
                         ..Default::default()
@@ -165,6 +179,8 @@ impl State {
                 push_constant_ranges: &[],
             });
 
+        let texture_depth_format = wgpu::TextureFormat::Depth24Plus;
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -189,16 +205,24 @@ impl State {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                //cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
                 // Setting this to anything other than Fill requires Features::POLYGON_MODE_LINE
                 // or Features::POLYGON_MODE_POINT
                 polygon_mode: wgpu::PolygonMode::Fill,
+                //polygon_mode: wgpu::PolygonMode::Line,
                 // Requires Features::DEPTH_CLIP_CONTROL
                 unclipped_depth: false,
                 // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: texture_depth_format,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -239,7 +263,7 @@ impl State {
             }],
         });
 
-        Self {
+        let mut s = Self {
             surface,
             device,
             queue,
@@ -250,10 +274,45 @@ impl State {
             index_buffer,
             uniform_buffer,
             uniform_bind_group,
+            texture_depth_format,
+            depth_texture: None,
+            depth_texture_view: None,
             num_indices,
             window,
             timestamp: std::time::Instant::now(),
-        }
+        };
+        s.configue_texture_depth_buffer();
+        s
+    }
+
+    fn configue_texture_depth_buffer(&mut self) {
+        let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("z-Depth texture"),
+            size: wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.texture_depth_format,
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[self.texture_depth_format],
+        });
+        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("z-Depth texture view"),
+            format: Some(self.texture_depth_format),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(1),
+        });
+
+        self.depth_texture = Some(depth_texture);
+        self.depth_texture_view = Some(depth_texture_view);
     }
 
     pub fn window(&self) -> &Window {
@@ -266,6 +325,7 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            self.configue_texture_depth_buffer();
         }
     }
 
@@ -289,6 +349,17 @@ impl State {
             });
 
         {
+            let depth_stencil_attachment = wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_texture_view.as_ref().unwrap(),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: true,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
+                    store: true,
+                }),
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -304,7 +375,7 @@ impl State {
                         store: true,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(depth_stencil_attachment),
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
