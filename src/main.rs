@@ -2,6 +2,7 @@ fn main() {
     pollster::block_on(run());
 }
 
+use image::EncodableLayout;
 use std::{default, iter, mem::size_of};
 use wgpu::{
     util::DeviceExt, BindGroupDescriptor, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -97,14 +98,41 @@ struct State {
     count: usize,
 }
 
-fn gen_texture_data(width: usize, height: usize) -> Vec<[u8; 4]> {
-    let mut res = vec![];
+fn gen_texture_data2(width: usize, height: usize) -> Vec<[u8; 4]> {
+    let mut res_arr = vec![];
     for i in 0..width {
         for j in 0..height {
-            res.push([i as u8, j as u8, 128, 255]);
+            res_arr.push([0 as u8, 0 as u8, 0, 255]);
         }
     }
-    res
+    let res = std::fs::read("assets/sshot.png").unwrap();
+    let res = image::load_from_memory_with_format(res.as_slice(), image::ImageFormat::Png);
+    let res = res.unwrap().into_rgba8();
+    assert!(res.width() < width as u32);
+    assert!(res.height() < height as u32);
+    let res_bytes = res.as_bytes();
+    for i in 0..res.width() {
+        for j in 0..res.height() {
+            res_arr[(i + j * width as u32) as usize][0] = res_bytes[(i + j * res.width()) as usize];
+            res_arr[(i + j * width as u32) as usize][1] =
+                res_bytes[(i + j * res.width()) as usize + 1];
+            res_arr[(i + j * width as u32) as usize][2] =
+                res_bytes[(i + j * res.width()) as usize + 2];
+            res_arr[(i + j * width as u32) as usize][3] =
+                res_bytes[(i + j * res.width()) as usize + 3];
+        }
+    }
+    res_arr
+}
+fn gen_texture_data(width: usize, height: usize) -> (Vec<u8>, usize, usize) {
+    let res = std::fs::read("assets/sshot.png").unwrap();
+    let res = image::load_from_memory_with_format(res.as_slice(), image::ImageFormat::Png);
+    let res = res.unwrap().into_rgba8();
+    (
+        res.iter().copied().collect(),
+        res.width() as usize,
+        res.height() as usize,
+    )
 }
 
 impl State {
@@ -439,6 +467,8 @@ impl State {
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
             //render_pass.draw(0..VERTICES.len() as u32, 0..1);
         }
+        let (tex, width, height) =
+            gen_texture_data(self.config.width as usize, self.config.height as usize);
 
         self.queue.write_texture(
             wgpu::ImageCopyTexture {
@@ -447,20 +477,22 @@ impl State {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: Default::default(),
             },
-            bytemuck::cast_slice(
-                gen_texture_data(self.config.width as usize, self.config.height as usize)
-                    .as_slice(),
-            ),
+            bytemuck::cast_slice(tex.as_slice()),
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * self.display_texture.width()),
-                rows_per_image: Some(self.display_texture.height()),
+                bytes_per_row: Some(4 * width as u32),
+                rows_per_image: Some(height as u32),
             },
             wgpu::Extent3d {
-                width: self.display_texture.width(),
-                height: self.display_texture.height(),
+                width: width as u32,
+                height: height as u32,
                 depth_or_array_layers: 1,
             },
+            //wgpu::Extent3d {
+            //    width: self.display_texture.width(),
+            //    height: self.display_texture.height(),
+            //    depth_or_array_layers: 1,
+            //},
         );
 
         self.queue.write_buffer(
