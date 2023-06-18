@@ -44,25 +44,26 @@ impl Vertex {
 
 const VERTICES: &[Vertex] = &[
     Vertex {
-        position: [-0.5, -0.5, -0.3],
+        position: [-1.0, -1.0, 0.0],
         color: [1.0, 1.0, 1.0],
     },
     Vertex {
-        position: [0.5, -0.5, -0.3],
+        position: [-1.0, 1.0, 0.0],
         color: [1.0, 1.0, 1.0],
     },
     Vertex {
-        position: [0.5, 0.5, -0.3],
+        position: [1.0, 1.0, 0.0],
         color: [1.0, 1.0, 1.0],
     },
     Vertex {
-        position: [-0.5, 0.5, -0.3],
+        position: [1.0, -1.0, 0.0],
         color: [1.0, 1.0, 1.0],
     },
-    Vertex {
-        position: [0.0, 0.0, 0.5],
-        color: [0.5, 0.5, 0.5],
-    },
+];
+#[rustfmt::skip]
+const INDICES: &[u16] = &[
+    3, 2, 1,
+    3, 0, 1,
 ];
 
 #[repr(C, align(16))]
@@ -73,18 +74,6 @@ struct UniformExample {
     _pad: [f32; 3],
 }
 //const UNIFORM: &[UniformExample] = &[UniformExample { utime: 0.0 }];
-#[rustfmt::skip]
-const INDICES: &[u16] = &[
-    // Base
-    0, 1, 2,
-    0, 1, 2,
-    // Sides
-    0, 2, 3,
-    0, 1, 4,
-    1, 2, 4,
-    2, 3, 4,
-    3, 0, 4,
-    ]; //, 2, 3, 4, /* padding */ 0];
 
 struct State {
     surface: wgpu::Surface,
@@ -99,10 +88,23 @@ struct State {
     uniform_bind_group: wgpu::BindGroup,
     depth_texture: Option<wgpu::Texture>,
     depth_texture_view: Option<wgpu::TextureView>,
+    display_texture: wgpu::Texture,
+    display_texture_view: wgpu::TextureView,
     texture_depth_format: wgpu::TextureFormat,
     timestamp: std::time::Instant,
     num_indices: u32,
     window: Window,
+    count: usize,
+}
+
+fn gen_texture_data(width: usize, height: usize) -> Vec<[u8; 4]> {
+    let mut res = vec![];
+    for i in 0..width {
+        for j in 0..height {
+            res.push([i as u8, j as u8, 128, 255]);
+        }
+    }
+    res
 }
 
 impl State {
@@ -158,18 +160,33 @@ impl State {
         });
         let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Example bind group"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                // The binding index as used in the @binding attribute in the shader
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: std::num::NonZeroU64::new(size_of::<UniformExample>() as _),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    // The binding index as used in the @binding attribute in the shader
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: std::num::NonZeroU64::new(
+                            size_of::<UniformExample>() as _
+                        ),
+                    },
+                    //count: std::num::NonZeroU32::new(1),
+                    count: None,
                 },
-                //count: std::num::NonZeroU32::new(1),
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    // The binding index as used in the @binding attribute in the shader
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let render_pipeline_layout =
@@ -250,20 +267,54 @@ impl State {
             size: std::mem::size_of::<UniformExample>() as u64,
             mapped_at_creation: false,
         });
+
+        let display_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("z-Depth texture"),
+            size: wgpu::Extent3d {
+                width: 256,
+                height: 256,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let display_texture_view = display_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Display texture view"),
+            format: Some(display_texture.format()),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: Default::default(),
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(1),
+        });
+
         let uniform_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: None,
             layout: &bind_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform_buffer,
-                    offset: 0,
-                    size: std::num::NonZeroU64::new(size_of::<UniformExample>() as _),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(size_of::<UniformExample>() as _),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&display_texture_view),
+                },
+            ],
         });
 
         let mut s = Self {
+            count: 0,
             surface,
             device,
             queue,
@@ -277,6 +328,8 @@ impl State {
             texture_depth_format,
             depth_texture: None,
             depth_texture_view: None,
+            display_texture,
+            display_texture_view,
             num_indices,
             window,
             timestamp: std::time::Instant::now(),
@@ -337,6 +390,7 @@ impl State {
     fn update(&mut self) {}
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        self.count += 1;
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -386,6 +440,29 @@ impl State {
             //render_pass.draw(0..VERTICES.len() as u32, 0..1);
         }
 
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.display_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: Default::default(),
+            },
+            bytemuck::cast_slice(
+                gen_texture_data(self.config.width as usize, self.config.height as usize)
+                    .as_slice(),
+            ),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * self.display_texture.width()),
+                rows_per_image: Some(self.display_texture.height()),
+            },
+            wgpu::Extent3d {
+                width: self.display_texture.width(),
+                height: self.display_texture.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+
         self.queue.write_buffer(
             &self.uniform_buffer,
             /*offset=*/ 0,
@@ -409,6 +486,7 @@ pub async fn run() {
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     let mut state = State::new(window).await;
+    let mut timer = std::time::Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -441,6 +519,7 @@ pub async fn run() {
             }
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
                 state.update();
+                //println!("Time: {}", timer.elapsed().as_millis());
                 match state.render() {
                     Ok(_) => {}
                     // Reconfigure the surface if it's lost or outdated
