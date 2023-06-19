@@ -99,7 +99,6 @@ struct State {
     display_texture: wgpu::Texture,
     display_texture_view: wgpu::TextureView,
     texture_depth_format: wgpu::TextureFormat,
-    tiled_texture_buffer: wgpu::Buffer,
     timestamp: std::time::Instant,
     num_indices: u32,
     window: Window,
@@ -222,20 +221,6 @@ impl State {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    // The binding index as used in the @binding attribute in the shader
-                    binding: 2,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: std::num::NonZeroU64::new(
-                            size_of::<TiledTexture>() as u64
-                        ),
-                        //min_binding_size: std::num::NonZeroU64::new(16),
-                    },
-                    count: None,
-                },
             ],
         });
 
@@ -317,18 +302,14 @@ impl State {
             size: std::mem::size_of::<UniformExample>() as u64,
             mapped_at_creation: false,
         });
-        let tiled_texture_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Tile Texture bounds Buffer"),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            size: std::mem::size_of::<TiledTexture>() as u64,
-            mapped_at_creation: false,
-        });
+
+        let (_tex, width, height) = gen_texture_data(config.width as usize, config.height as usize);
 
         let display_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("z-Depth texture"),
             size: wgpu::Extent3d {
-                width: 256,
-                height: 256,
+                width: width as u32,
+                height: height as u32,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -366,14 +347,6 @@ impl State {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&display_texture_view),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &tiled_texture_buffer,
-                        offset: 0,
-                        size: std::num::NonZeroU64::new(size_of::<TiledTexture>() as _),
-                    }),
-                },
             ],
         });
 
@@ -394,7 +367,6 @@ impl State {
             depth_texture_view: None,
             display_texture,
             display_texture_view,
-            tiled_texture_buffer,
             num_indices,
             window,
             timestamp: std::time::Instant::now(),
@@ -541,14 +513,6 @@ impl State {
             bytemuck::bytes_of(&UniformExample {
                 color: [0.5, 1.0, 0.4, 1.0],
                 time: self.timestamp.elapsed().as_secs_f32(),
-                ..Default::default()
-            }),
-        );
-        self.queue.write_buffer(
-            &self.tiled_texture_buffer,
-            /*offset=*/ 0,
-            bytemuck::bytes_of(&TiledTexture {
-                size: [width as u32, height as u32],
                 ..Default::default()
             }),
         );
